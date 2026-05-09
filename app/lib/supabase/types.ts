@@ -61,6 +61,8 @@ export interface TradeWithRelations extends Trade {
   pnl?: number | null;
 }
 
+// Wielkość pozycji = ilość jednostek bazowych (np. HBAR w HBARUSDT).
+// PnL = różnica_ceny * ilość_jednostek — prowizja (wynik w walucie kwotowanej, np. USDT).
 export function calcTradeMetrics(trade: Trade): { rMultiple: number | null; pnl: number | null } {
   if (!trade.exit_price || !trade.exit_time) return { rMultiple: null, pnl: null };
 
@@ -70,12 +72,16 @@ export function calcTradeMetrics(trade: Trade): { rMultiple: number | null; pnl:
       ? trade.exit_price - trade.entry_price
       : trade.entry_price - trade.exit_price;
 
-  const rMultiple = riskDistance > 0 ? priceDiff / riskDistance : null;
-
-  const grossPnl = priceDiff * trade.position_size * 10000;
+  const grossPnl = priceDiff * trade.position_size;
   const pnl = grossPnl - trade.commission_fees;
 
-  return { rMultiple: rMultiple ? Math.round(rMultiple * 100) / 100 : null, pnl: Math.round(pnl * 100) / 100 };
+  const riskAmount = riskDistance * trade.position_size;
+  const rMultiple = riskAmount > 0 ? pnl / riskAmount : null;
+
+  return {
+    rMultiple: rMultiple !== null ? Math.round(rMultiple * 100) / 100 : null,
+    pnl: Math.round(pnl * 100) / 100,
+  };
 }
 
 export function calcKPIs(trades: Trade[]) {

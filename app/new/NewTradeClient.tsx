@@ -1,27 +1,51 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useCallback } from "react";
 import { createTrade } from "./actions";
 
 interface Strategy { id: string; name: string; }
 interface Tag { id: string; name: string; category: string; }
 
-function calcRR(direction: "LONG" | "SHORT", entry: number, sl: number, tp: number, size: number, accountSize: number) {
-  if (!entry || !sl || !tp || !size) return null;
+// Parsuje symbol na walutę bazową i kwotowaną
+function parseSymbol(raw: string) {
+  const clean = raw.trim().toUpperCase().replace(/\.P$/i, "");
+  const isPerpetual = raw.trim().toUpperCase().endsWith(".P");
+
+  const quotes = ["USDT", "USDC", "BUSD", "FDUSD", "TUSD", "USD", "BTC", "ETH", "BNB"];
+  for (const q of quotes) {
+    if (clean.endsWith(q) && clean.length > q.length) {
+      return { base: clean.slice(0, -q.length), quote: q, isPerpetual };
+    }
+  }
+  // Forex 6-znak: EURUSD, GBPJPY
+  if (clean.length === 6 && /^[A-Z]+$/.test(clean)) {
+    return { base: clean.slice(0, 3), quote: clean.slice(3), isPerpetual: false };
+  }
+  return { base: clean, quote: "USDT", isPerpetual };
+}
+
+// R:R kalkulator — pozycja w jednostkach bazowych, PnL w walucie kwotowanej
+function calcRR(entry: number, sl: number, tp: number, size: number, accountSize: number) {
+  if (!entry || !sl || !tp || !size || sl === entry) return null;
   const riskDist = Math.abs(entry - sl);
   const rewardDist = Math.abs(entry - tp);
-  const risk = riskDist * size * 10000;
-  const reward = rewardDist * size * 10000;
+  if (riskDist === 0) return null;
+  const risk = riskDist * size;
+  const reward = rewardDist * size;
   const riskPct = accountSize > 0 ? (risk / accountSize) * 100 : 0;
   const rewardPct = accountSize > 0 ? (reward / accountSize) * 100 : 0;
   return { risk, reward, rr: reward / risk, riskPct, rewardPct };
 }
 
+function getRRAlert(rr: number) {
+  if (rr >= 2) return { cls: "border-l-secondary", text: "Parametry w normie. Możesz kontynuować." };
+  if (rr >= 1) return { cls: "border-l-primary", text: "R:R poniżej optymalnego. Rozważ lepszy punkt wejścia." };
+  return { cls: "border-l-tertiary-container", text: "R:R poniżej 1.0 — zagranie nie spełnia minimalnego kryterium." };
+}
+
 const TAG_CATEGORIES: Record<string, string> = {
-  MISTAKE: "text-error",
-  QUALITY: "text-secondary",
-  EMOTION: "text-primary",
-  CONDITION: "text-on-surface-variant",
+  MISTAKE: "text-error", QUALITY: "text-secondary",
+  EMOTION: "text-primary", CONDITION: "text-on-surface-variant",
 };
 
 export default function NewTradeClient({
@@ -32,6 +56,7 @@ export default function NewTradeClient({
 }) {
   const [isPending, startTransition] = useTransition();
   const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
+  const [instrument, setInstrument] = useState("");
   const [entryPrice, setEntryPrice] = useState("");
   const [stopLoss, setStopLoss] = useState("");
   const [takeProfit, setTakeProfit] = useState("");
@@ -40,18 +65,44 @@ export default function NewTradeClient({
   const [dragOver, setDragOver] = useState(false);
   const [checklist, setChecklist] = useState({ setup: false, risk: false, macro: false, emotion: false });
 
-  const calc = calcRR(direction, parseFloat(entryPrice), parseFloat(stopLoss), parseFloat(takeProfit), parseFloat(positionSize), accountSize);
+  // Kurs z Bybit
+  const [fetchingPrice, setFetchingPrice] = useState(false);
+  const [priceData, setPriceData] = useState<{
+    price: number; markPrice: number; fundingRate: number; change24h: number;
+  } | null>(null);
+  const [priceError, setPriceError] = useState<string | null>(null);
+
+  const parsedSymbol = parseSymbol(instrument);
+  const hasSymbol = instrument.trim().length >= 3;
+  const canFetchPrice = hasSymbol && (parsedSymbol.isPerpetual || parsedSymbol.quote === "USDT" || parsedSymbol.quote === "USDC");
+
+  const fetchPrice = useCallback(async () => {
+    if (!hasSymbol) return;
+    setFetchingPrice(true);
+    setPriceError(null);
+    setPriceData(null);
+    try {
+      const res = await fetch(`/api/price?symbol=${encodeURIComponent(instrument.trim())}`);
+      const data = await res.json();
+      if (!res.ok) { setPriceError(data.error); return; }
+      setPriceData(data);
+      setEntryPrice(String(data.price));
+    } catch {
+      setPriceError("Błąd sieci");
+    } finally {
+      setFetchingPrice(false);
+    }
+  }, [instrument, hasSymbol]);
+
+  const calc = calcRR(
+    parseFloat(entryPrice), parseFloat(stopLoss),
+    parseFloat(takeProfit), parseFloat(positionSize), accountSize
+  );
   const maxRiskAmount = (accountSize * riskPerTrade) / 100;
   const riskOverLimit = calc && calc.risk > maxRiskAmount;
 
   const toggleTag = (id: string) =>
-    setSelectedTags((prev) => prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]);
-
-  const getRRAlert = (rr: number) => {
-    if (rr >= 2) return { cls: "border-l-secondary", text: "Parametry mieszczą się w profilu ryzyka. Możesz kontynuować." };
-    if (rr >= 1) return { cls: "border-l-primary", text: "R:R poniżej optymalnego poziomu. Rozważ lepszy punkt wejścia." };
-    return { cls: "border-l-tertiary-container", text: "Uwaga: R:R poniżej 1.0. Zagranie nie spełnia minimalnego kryterium." };
-  };
+    setSelectedTags((p) => p.includes(id) ? p.filter((t) => t !== id) : [...p, id]);
 
   const now = new Date();
   const localIso = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
@@ -68,17 +119,69 @@ export default function NewTradeClient({
         {selectedTags.map((id) => <input key={id} type="hidden" name="tagIds" value={id} />)}
 
         <div className="grid grid-cols-12 gap-5">
-          {/* Form */}
+          {/* ── LEWA KOLUMNA ─────────────────────────────────────── */}
           <div className="col-span-8 flex flex-col gap-5">
-            {/* Market Data */}
+
+            {/* Dane Rynkowe */}
             <section className="bg-surface-container rounded-lg border border-outline-variant p-6">
               <h3 className="text-xl font-semibold text-on-surface mb-5 pb-2 border-b border-outline-variant">Dane Rynkowe</h3>
               <div className="grid grid-cols-2 gap-5">
+
+                {/* Instrument + przycisk pobierania kursu */}
                 <div className="col-span-2">
-                  <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Instrument *</label>
-                  <input name="instrument" type="text" required placeholder="np. EURUSD, AAPL, BTCUSDT"
-                    className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors" />
+                  <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">
+                    Instrument *
+                    {parsedSymbol.isPerpetual && (
+                      <span className="ml-2 text-primary bg-primary/10 border border-primary/20 px-1.5 py-0.5 rounded">PERPETUAL</span>
+                    )}
+                  </label>
+                  <div className="flex gap-2">
+                    <div className="relative flex-1">
+                      <input
+                        name="instrument"
+                        type="text"
+                        required
+                        value={instrument}
+                        onChange={(e) => { setInstrument(e.target.value); setPriceData(null); setPriceError(null); }}
+                        placeholder="np. HBARUSDT.P, BTCUSDT.P, EURUSD"
+                        className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={fetchPrice}
+                      disabled={!canFetchPrice || fetchingPrice}
+                      title="Pobierz aktualny kurs z Bybit"
+                      className="flex items-center gap-1.5 px-4 py-3 bg-surface-container-highest border border-outline-variant rounded hover:border-primary hover:text-primary text-on-surface-variant transition-colors disabled:opacity-40 font-mono text-xs whitespace-nowrap"
+                    >
+                      <span className={`material-symbols-outlined text-[16px] ${fetchingPrice ? "animate-spin" : ""}`}>
+                        {fetchingPrice ? "progress_activity" : "download"}
+                      </span>
+                      Pobierz kurs
+                    </button>
+                  </div>
+
+                  {/* Ticker info z Bybit */}
+                  {priceData && (
+                    <div className="mt-2 flex items-center gap-4 px-3 py-2 bg-surface-container-highest rounded border border-outline-variant">
+                      <span className="font-mono text-xs text-on-surface-variant">Mark:</span>
+                      <span className="font-mono text-sm text-on-surface font-bold">{priceData.markPrice}</span>
+                      <span className="font-mono text-xs text-on-surface-variant">Funding:</span>
+                      <span className={`font-mono text-xs font-bold ${priceData.fundingRate >= 0 ? "text-secondary" : "text-tertiary-container"}`}>
+                        {(priceData.fundingRate * 100).toFixed(4)}%
+                      </span>
+                      <span className="font-mono text-xs text-on-surface-variant">24h:</span>
+                      <span className={`font-mono text-xs font-bold ${priceData.change24h >= 0 ? "text-secondary" : "text-tertiary-container"}`}>
+                        {priceData.change24h >= 0 ? "+" : ""}{priceData.change24h.toFixed(2)}%
+                      </span>
+                    </div>
+                  )}
+                  {priceError && (
+                    <p className="mt-1.5 font-mono text-[10px] text-error">{priceError}</p>
+                  )}
                 </div>
+
+                {/* Kierunek */}
                 <div>
                   <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Kierunek</label>
                   <div className="flex gap-3">
@@ -94,64 +197,97 @@ export default function NewTradeClient({
                     ))}
                   </div>
                 </div>
+
+                {/* Data/czas */}
                 <div>
                   <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Data i Czas Wejścia</label>
                   <input name="entryTime" type="datetime-local" defaultValue={localIso}
                     className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors" />
                 </div>
+
+                {/* Cena wejścia */}
                 <div>
-                  <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Cena Wejścia *</label>
-                  <input name="entryPrice" type="number" step="any" required placeholder="0.00000" value={entryPrice} onChange={(e) => setEntryPrice(e.target.value)}
+                  <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">
+                    Cena Wejścia * {parsedSymbol.quote && <span className="text-on-surface-variant normal-case">({parsedSymbol.quote})</span>}
+                  </label>
+                  <input name="entryPrice" type="number" step="any" required placeholder="0.00000"
+                    value={entryPrice} onChange={(e) => setEntryPrice(e.target.value)}
                     className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors text-right" />
                 </div>
               </div>
             </section>
 
-            {/* Risk & Screenshot */}
+            {/* Ryzyko + Screenshot */}
             <div className="grid grid-cols-2 gap-5">
               <section className="bg-surface-container rounded-lg border border-outline-variant p-6">
                 <h3 className="text-xl font-semibold text-on-surface mb-5 pb-2 border-b border-outline-variant">Zarządzanie Ryzykiem</h3>
                 <div className="flex flex-col gap-5">
                   <div>
-                    <label className="block font-mono text-[10px] text-tertiary-container mb-2 uppercase">Stop Loss *</label>
-                    <input name="stopLoss" type="number" step="any" required placeholder="0.00000" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)}
+                    <label className="block font-mono text-[10px] text-tertiary-container mb-2 uppercase">
+                      Stop Loss {parsedSymbol.quote && <span className="text-tertiary-container/70 normal-case">({parsedSymbol.quote})</span>}
+                    </label>
+                    <input name="stopLoss" type="number" step="any" required placeholder="0.00000"
+                      value={stopLoss} onChange={(e) => setStopLoss(e.target.value)}
                       className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-tertiary-container text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors text-right" />
                   </div>
                   <div>
-                    <label className="block font-mono text-[10px] text-secondary mb-2 uppercase">Take Profit</label>
-                    <input name="takeProfit" type="number" step="any" placeholder="0.00000" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)}
+                    <label className="block font-mono text-[10px] text-secondary mb-2 uppercase">
+                      Take Profit {parsedSymbol.quote && <span className="text-secondary/70 normal-case">({parsedSymbol.quote})</span>}
+                    </label>
+                    <input name="takeProfit" type="number" step="any" placeholder="0.00000"
+                      value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)}
                       className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-secondary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors text-right" />
                   </div>
                   <div>
-                    <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Wielkość Pozycji *</label>
-                    <input name="positionSize" type="number" step="any" required placeholder="1.00" value={positionSize} onChange={(e) => setPositionSize(e.target.value)}
+                    <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">
+                      Wielkość Pozycji *
+                      {parsedSymbol.base
+                        ? <span className="ml-1 text-primary">({parsedSymbol.base})</span>
+                        : <span className="text-on-surface-variant"> (jednostki)</span>
+                      }
+                    </label>
+                    <input name="positionSize" type="number" step="any" required placeholder="0.00"
+                      value={positionSize} onChange={(e) => setPositionSize(e.target.value)}
                       className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors text-right" />
+                    {parsedSymbol.base && (
+                      <p className="font-mono text-[9px] text-on-surface-variant mt-1">
+                        Ilość {parsedSymbol.base} — nie lotów.
+                      </p>
+                    )}
                   </div>
                   <div>
-                    <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">Prowizje / Swapy (USD)</label>
+                    <label className="block font-mono text-[10px] text-on-surface-variant mb-2 uppercase">
+                      Prowizja ({parsedSymbol.quote || "USDT"})
+                    </label>
                     <input name="commissionFees" type="number" step="any" placeholder="0.00" defaultValue="0"
                       className="w-full bg-surface-container-highest border-b border-outline-variant focus:border-primary text-on-surface font-mono py-3 px-3 rounded-t focus:outline-none transition-colors text-right" />
                   </div>
                 </div>
               </section>
+
               <section className="bg-surface-container rounded-lg border border-outline-variant p-6 flex flex-col">
                 <h3 className="text-xl font-semibold text-on-surface mb-5 pb-2 border-b border-outline-variant">Zrzut Ekranu</h3>
                 <div
                   onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                   onDragLeave={() => setDragOver(false)}
                   onDrop={(e) => { e.preventDefault(); setDragOver(false); }}
-                  className={`flex-1 border-2 border-dashed rounded-lg flex flex-col items-center justify-center p-6 cursor-pointer transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-outline-variant bg-surface-container-highest hover:bg-surface-container-high hover:border-outline"}`}
+                  className={`flex-1 border-2 border-dashed rounded-lg flex flex-col items-center justify-center p-6 cursor-pointer transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-outline-variant bg-surface-container-highest hover:bg-surface-container-high"}`}
                 >
                   <span className="material-symbols-outlined text-[48px] text-on-surface-variant mb-3">add_photo_alternate</span>
                   <p className="font-mono text-xs text-on-surface text-center mb-1">Przeciągnij i upuść</p>
-                  <p className="font-mono text-[10px] text-on-surface-variant text-center">(Wkrótce — Supabase Storage)</p>
+                  <p className="font-mono text-[10px] text-on-surface-variant text-center">Screen przed wejściem</p>
                 </div>
               </section>
             </div>
 
-            {/* Checklist */}
+            {/* Checklista */}
             <section className="bg-surface-container rounded-lg border border-outline-variant p-6">
-              <h3 className="text-xl font-semibold text-on-surface mb-5 pb-2 border-b border-outline-variant">Checklista Przed Transakcją</h3>
+              <div className="flex justify-between items-center mb-5 pb-2 border-b border-outline-variant">
+                <h3 className="text-xl font-semibold text-on-surface">Checklista Przed Transakcją</h3>
+                <span className={`font-mono text-xs ${Object.values(checklist).every(Boolean) ? "text-secondary" : "text-on-surface-variant"}`}>
+                  {Object.values(checklist).filter(Boolean).length}/4
+                </span>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { key: "setup", label: "Setup zgodny z planem?" },
@@ -167,7 +303,7 @@ export default function NewTradeClient({
               </div>
             </section>
 
-            {/* Strategy & Tags */}
+            {/* Strategia i Tagi */}
             <section className="bg-surface-container rounded-lg border border-outline-variant p-6">
               <h3 className="text-xl font-semibold text-on-surface mb-5 pb-2 border-b border-outline-variant">Strategia i Tagi</h3>
               <div className="grid grid-cols-2 gap-5 mb-5">
@@ -184,69 +320,72 @@ export default function NewTradeClient({
                     className="w-full bg-surface-container-highest border border-outline-variant focus:border-primary text-on-surface text-sm py-2 px-3 rounded focus:outline-none transition-colors resize-none" />
                 </div>
               </div>
-
-              {/* Tags */}
-              {tags.length > 0 ? (
+              {tags.length > 0 && (
                 <div>
                   <p className="font-mono text-[10px] text-on-surface-variant uppercase mb-3">Tagi Psychologiczne</p>
                   <div className="flex flex-wrap gap-2">
                     {tags.map((tag) => {
                       const isSelected = selectedTags.includes(tag.id);
-                      const colorCls = TAG_CATEGORIES[tag.category] ?? "text-on-surface-variant";
                       return (
                         <button type="button" key={tag.id} onClick={() => toggleTag(tag.id)}
-                          className={`px-3 py-1 rounded font-mono text-xs transition-colors border ${isSelected ? `border-primary bg-primary/10 text-primary` : `border-outline-variant bg-surface-container-highest ${colorCls}`}`}>
+                          className={`px-3 py-1 rounded font-mono text-xs transition-colors border ${isSelected ? "border-primary bg-primary/10 text-primary" : `border-outline-variant bg-surface-container-highest ${TAG_CATEGORIES[tag.category] ?? "text-on-surface-variant"}`}`}>
                           {tag.name}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-              ) : (
-                <p className="font-mono text-xs text-on-surface-variant">Brak tagów — dodaj je w Ustawieniach po wdrożeniu schematu bazy.</p>
               )}
             </section>
 
-            {/* Submit */}
+            {/* Przyciski */}
             <div className="flex justify-end gap-3">
               <a href="/log" className="px-6 py-3 border border-outline-variant text-on-surface rounded-lg hover:bg-surface-container-high transition-colors text-sm">Anuluj</a>
-              <button type="submit" disabled={isPending} className="bg-primary text-on-primary px-8 py-3 rounded-lg font-semibold text-sm hover:bg-primary-fixed-dim transition-colors flex items-center gap-2 disabled:opacity-60">
+              <button type="submit" disabled={isPending}
+                className="bg-primary text-on-primary px-8 py-3 rounded-lg font-semibold text-sm hover:bg-primary-fixed-dim transition-colors flex items-center gap-2 disabled:opacity-60">
                 <span className="material-symbols-outlined text-[18px]">{isPending ? "progress_activity" : "save"}</span>
                 {isPending ? "Zapisywanie..." : "Log Trade"}
               </button>
             </div>
           </div>
 
-          {/* Risk Assistant */}
+          {/* ── ASYSTENT RYZYKA ──────────────────────────────────── */}
           <div className="col-span-4">
             <div className="sticky top-24 bg-surface-container-low border border-outline-variant rounded-lg p-6">
               <div className="flex items-center gap-3 mb-6 pb-3 border-b border-outline-variant">
                 <span className="material-symbols-outlined text-primary">analytics</span>
-                <h3 className="text-xl font-semibold text-on-surface">Asystent Ryzyka</h3>
+                <div>
+                  <h3 className="text-xl font-semibold text-on-surface">Asystent Ryzyka</h3>
+                  <p className="font-mono text-[9px] text-on-surface-variant">Kapitał: {accountSize.toLocaleString("pl-PL")} {currency}</p>
+                </div>
               </div>
+
               {calc ? (
                 <div className="flex flex-col gap-5">
-                  {/* Risk */}
+                  {/* Ryzyko */}
                   <div className={`rounded-lg p-4 border ${riskOverLimit ? "border-error/40 bg-error/5" : "border-outline-variant bg-surface-container-highest"}`}>
                     <p className="font-mono text-[10px] text-tertiary-container mb-1 uppercase tracking-widest">Ryzyko</p>
-                    <p className="text-3xl font-bold text-on-surface">-${calc.risk.toFixed(2)}</p>
+                    <p className="text-3xl font-bold text-on-surface">
+                      -{calc.risk.toFixed(2)} <span className="text-lg text-on-surface-variant">{parsedSymbol.quote}</span>
+                    </p>
                     <p className={`font-mono text-xs mt-1 font-bold ${riskOverLimit ? "text-error" : "text-on-surface-variant"}`}>
-                      {calc.riskPct.toFixed(2)}% kapitału
-                      {riskOverLimit && ` — przekracza limit ${riskPerTrade}%!`}
+                      {calc.riskPct.toFixed(2)}% kapitału{riskOverLimit && ` — przekracza limit!`}
                     </p>
                     <div className="mt-2 h-1.5 w-full bg-surface-container rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all ${riskOverLimit ? "bg-error" : "bg-tertiary-container"}`}
-                        style={{ width: `${Math.min(calc.riskPct / riskPerTrade * 100, 100)}%` }}
-                      />
+                      <div className={`h-full rounded-full transition-all ${riskOverLimit ? "bg-error" : "bg-tertiary-container"}`}
+                        style={{ width: `${Math.min((calc.riskPct / riskPerTrade) * 100, 100)}%` }} />
                     </div>
-                    <p className="font-mono text-[9px] text-on-surface-variant mt-1">Limit: {riskPerTrade}% = ${maxRiskAmount.toFixed(2)}</p>
+                    <p className="font-mono text-[9px] text-on-surface-variant mt-1">
+                      Limit: {riskPerTrade}% = {maxRiskAmount.toFixed(2)} {currency}
+                    </p>
                   </div>
 
-                  {/* Reward */}
+                  {/* Potencjalny zysk */}
                   <div className="rounded-lg p-4 border border-outline-variant bg-surface-container-highest">
                     <p className="font-mono text-[10px] text-secondary mb-1 uppercase tracking-widest">Potencjalny Zysk</p>
-                    <p className="text-3xl font-bold text-on-surface">+${calc.reward.toFixed(2)}</p>
+                    <p className="text-3xl font-bold text-on-surface">
+                      +{calc.reward.toFixed(2)} <span className="text-lg text-on-surface-variant">{parsedSymbol.quote}</span>
+                    </p>
                     <p className="font-mono text-xs text-on-surface-variant mt-1">{calc.rewardPct.toFixed(2)}% kapitału</p>
                   </div>
 
@@ -266,16 +405,25 @@ export default function NewTradeClient({
                       </span>
                       <p className="text-xs text-on-surface-variant">
                         {riskOverLimit
-                          ? `Ryzyko ${calc.riskPct.toFixed(2)}% przekracza Twój limit ${riskPerTrade}%. Zmniejsz pozycję.`
+                          ? `Ryzyko ${calc.riskPct.toFixed(2)}% przekracza limit ${riskPerTrade}%. Zmniejsz pozycję.`
                           : getRRAlert(calc.rr).text}
                       </p>
                     </div>
                   </div>
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center py-12 text-center">
-                  <span className="material-symbols-outlined text-[48px] text-on-surface-variant mb-3">calculate</span>
-                  <p className="text-sm text-on-surface-variant">Wprowadź Wejście, SL i TP, aby zobaczyć kalkulację.</p>
+                <div className="flex flex-col items-center justify-center py-12 text-center gap-3">
+                  <span className="material-symbols-outlined text-[48px] text-on-surface-variant">calculate</span>
+                  <p className="text-sm text-on-surface-variant">
+                    Wpisz instrument, Wejście, SL i TP — kalkulator policzy ryzyko na żywo.
+                  </p>
+                  {canFetchPrice && (
+                    <button type="button" onClick={fetchPrice} disabled={fetchingPrice}
+                      className="text-primary font-mono text-xs hover:text-primary-fixed-dim transition-colors flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">download</span>
+                      Pobierz aktualny kurs
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -284,10 +432,4 @@ export default function NewTradeClient({
       </form>
     </>
   );
-}
-
-function getRRAlert(rr: number) {
-  if (rr >= 2) return { cls: "border-l-secondary", text: "Parametry mieszczą się w profilu ryzyka. Możesz kontynuować." };
-  if (rr >= 1) return { cls: "border-l-primary", text: "R:R poniżej optymalnego. Rozważ lepszy punkt wejścia." };
-  return { cls: "border-l-tertiary-container", text: "Uwaga: R:R poniżej 1.0. Zagranie nie spełnia minimalnego kryterium." };
 }

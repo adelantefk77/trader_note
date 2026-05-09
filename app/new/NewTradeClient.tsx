@@ -6,13 +6,15 @@ import { createTrade } from "./actions";
 interface Strategy { id: string; name: string; }
 interface Tag { id: string; name: string; category: string; }
 
-function calcRR(direction: "LONG" | "SHORT", entry: number, sl: number, tp: number, size: number) {
+function calcRR(direction: "LONG" | "SHORT", entry: number, sl: number, tp: number, size: number, accountSize: number) {
   if (!entry || !sl || !tp || !size) return null;
   const riskDist = Math.abs(entry - sl);
   const rewardDist = Math.abs(entry - tp);
   const risk = riskDist * size * 10000;
   const reward = rewardDist * size * 10000;
-  return { risk, reward, rr: reward / risk };
+  const riskPct = accountSize > 0 ? (risk / accountSize) * 100 : 0;
+  const rewardPct = accountSize > 0 ? (reward / accountSize) * 100 : 0;
+  return { risk, reward, rr: reward / risk, riskPct, rewardPct };
 }
 
 const TAG_CATEGORIES: Record<string, string> = {
@@ -22,7 +24,12 @@ const TAG_CATEGORIES: Record<string, string> = {
   CONDITION: "text-on-surface-variant",
 };
 
-export default function NewTradeClient({ strategies, tags }: { strategies: Strategy[]; tags: Tag[] }) {
+export default function NewTradeClient({
+  strategies, tags, accountSize = 10000, currency = "USD", riskPerTrade = 1.5,
+}: {
+  strategies: Strategy[]; tags: Tag[];
+  accountSize?: number; currency?: string; riskPerTrade?: number;
+}) {
   const [isPending, startTransition] = useTransition();
   const [direction, setDirection] = useState<"LONG" | "SHORT">("LONG");
   const [entryPrice, setEntryPrice] = useState("");
@@ -33,7 +40,9 @@ export default function NewTradeClient({ strategies, tags }: { strategies: Strat
   const [dragOver, setDragOver] = useState(false);
   const [checklist, setChecklist] = useState({ setup: false, risk: false, macro: false, emotion: false });
 
-  const calc = calcRR(direction, parseFloat(entryPrice), parseFloat(stopLoss), parseFloat(takeProfit), parseFloat(positionSize));
+  const calc = calcRR(direction, parseFloat(entryPrice), parseFloat(stopLoss), parseFloat(takeProfit), parseFloat(positionSize), accountSize);
+  const maxRiskAmount = (accountSize * riskPerTrade) / 100;
+  const riskOverLimit = calc && calc.risk > maxRiskAmount;
 
   const toggleTag = (id: string) =>
     setSelectedTags((prev) => prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]);
@@ -216,25 +225,50 @@ export default function NewTradeClient({ strategies, tags }: { strategies: Strat
                 <h3 className="text-xl font-semibold text-on-surface">Asystent Ryzyka</h3>
               </div>
               {calc ? (
-                <div className="flex flex-col gap-6">
-                  <div>
-                    <p className="font-mono text-[10px] text-tertiary-container mb-2 uppercase tracking-widest">Ryzyko (Kwota)</p>
-                    <p className="text-4xl font-bold text-on-surface">-${calc.risk.toFixed(2)}</p>
-                    <p className="font-mono text-[10px] text-on-surface-variant mt-1">Maksymalna strata</p>
+                <div className="flex flex-col gap-5">
+                  {/* Risk */}
+                  <div className={`rounded-lg p-4 border ${riskOverLimit ? "border-error/40 bg-error/5" : "border-outline-variant bg-surface-container-highest"}`}>
+                    <p className="font-mono text-[10px] text-tertiary-container mb-1 uppercase tracking-widest">Ryzyko</p>
+                    <p className="text-3xl font-bold text-on-surface">-${calc.risk.toFixed(2)}</p>
+                    <p className={`font-mono text-xs mt-1 font-bold ${riskOverLimit ? "text-error" : "text-on-surface-variant"}`}>
+                      {calc.riskPct.toFixed(2)}% kapitału
+                      {riskOverLimit && ` — przekracza limit ${riskPerTrade}%!`}
+                    </p>
+                    <div className="mt-2 h-1.5 w-full bg-surface-container rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${riskOverLimit ? "bg-error" : "bg-tertiary-container"}`}
+                        style={{ width: `${Math.min(calc.riskPct / riskPerTrade * 100, 100)}%` }}
+                      />
+                    </div>
+                    <p className="font-mono text-[9px] text-on-surface-variant mt-1">Limit: {riskPerTrade}% = ${maxRiskAmount.toFixed(2)}</p>
                   </div>
-                  <div>
-                    <p className="font-mono text-[10px] text-secondary mb-2 uppercase tracking-widest">Potencjalny Zysk</p>
-                    <p className="text-4xl font-bold text-on-surface">+${calc.reward.toFixed(2)}</p>
-                    <p className="font-mono text-[10px] text-on-surface-variant mt-1">Cel (Take Profit)</p>
+
+                  {/* Reward */}
+                  <div className="rounded-lg p-4 border border-outline-variant bg-surface-container-highest">
+                    <p className="font-mono text-[10px] text-secondary mb-1 uppercase tracking-widest">Potencjalny Zysk</p>
+                    <p className="text-3xl font-bold text-on-surface">+${calc.reward.toFixed(2)}</p>
+                    <p className="font-mono text-xs text-on-surface-variant mt-1">{calc.rewardPct.toFixed(2)}% kapitału</p>
                   </div>
+
+                  {/* R:R */}
                   <div className="bg-surface-container-highest p-4 rounded border border-outline-variant">
                     <p className="font-mono text-[10px] text-on-surface-variant mb-2 uppercase">R:R Ratio</p>
-                    <p className={`text-3xl font-bold ${calc.rr >= 2 ? "text-secondary" : calc.rr >= 1 ? "text-primary" : "text-tertiary-container"}`}>1 : {calc.rr.toFixed(2)}</p>
+                    <p className={`text-3xl font-bold ${calc.rr >= 2 ? "text-secondary" : calc.rr >= 1 ? "text-primary" : "text-tertiary-container"}`}>
+                      1 : {calc.rr.toFixed(2)}
+                    </p>
                   </div>
-                  <div className={`border-l-4 ${getRRAlert(calc.rr).cls} bg-surface-container-high p-4 rounded-r`}>
+
+                  {/* Alert */}
+                  <div className={`border-l-4 ${riskOverLimit ? "border-l-error" : getRRAlert(calc.rr).cls} bg-surface-container-high p-4 rounded-r`}>
                     <div className="flex gap-2">
-                      <span className="material-symbols-outlined text-primary text-[18px] mt-0.5">info</span>
-                      <p className="text-xs text-on-surface-variant">{getRRAlert(calc.rr).text}</p>
+                      <span className={`material-symbols-outlined text-[18px] mt-0.5 ${riskOverLimit ? "text-error" : "text-primary"}`}>
+                        {riskOverLimit ? "warning" : "info"}
+                      </span>
+                      <p className="text-xs text-on-surface-variant">
+                        {riskOverLimit
+                          ? `Ryzyko ${calc.riskPct.toFixed(2)}% przekracza Twój limit ${riskPerTrade}%. Zmniejsz pozycję.`
+                          : getRRAlert(calc.rr).text}
+                      </p>
                     </div>
                   </div>
                 </div>

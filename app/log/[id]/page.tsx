@@ -15,10 +15,11 @@ function DataRow({ label, value, valueColor }: { label: string; value: string; v
 const ERROR_TAGS = ["FOMO", "Revenge Trading", "Oversize", "Hesitation"];
 const QUALITY_TAGS = ["A-Setup", "Zgodnie z Planem", "Cierpliwość", "Skupienie"];
 
-export default async function TradeDetailPage({ params }: { params: { id: string } }) {
+export default async function TradeDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   let trade;
   try {
-    trade = await getTradeById(params.id);
+    trade = await getTradeById(id);
   } catch {
     notFound();
   }

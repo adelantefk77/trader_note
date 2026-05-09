@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { saveProfile, saveRiskLimits } from "./actions";
+import { saveProfile, saveRiskLimits, createStrategy, deleteStrategy } from "./actions";
 
 type Tab = "profil" | "strategie" | "rygor" | "bezpieczenstwo";
 
@@ -192,27 +192,82 @@ export default function SettingsClient({
 
       {/* ── STRATEGIE ──────────────────────────────────────────────── */}
       {activeTab === "strategie" && (
-        <div className="bg-surface-container rounded-lg border border-outline-variant p-6">
-          <div className="flex justify-between items-center mb-5 pb-3 border-b border-outline-variant">
-            <h3 className="text-lg font-semibold text-on-surface">Zarządzanie Strategiami</h3>
-          </div>
-          {strategies.length === 0 ? (
-            <p className="text-on-surface-variant text-sm">Brak strategii. Dodaj pierwszą przez formularz nowej transakcji.</p>
-          ) : (
-            <div className="flex flex-col gap-3">
-              {strategies.map((s) => (
-                <div key={s.id} className="flex items-start justify-between p-4 bg-surface-container-low border border-outline-variant rounded-lg">
-                  <div className="flex items-start gap-3">
-                    <span className="material-symbols-outlined text-primary text-[18px] mt-0.5">extension</span>
-                    <div>
-                      <p className="text-sm text-on-surface font-medium">{s.name}</p>
-                      {s.description && <p className="font-mono text-[10px] text-on-surface-variant mt-1">{s.description}</p>}
-                    </div>
-                  </div>
-                </div>
-              ))}
+        <div className="grid grid-cols-12 gap-5">
+          {/* Lista */}
+          <div className="col-span-7 bg-surface-container rounded-lg border border-outline-variant">
+            <div className="p-5 border-b border-outline-variant">
+              <h3 className="text-lg font-semibold text-on-surface">Strategie ({strategies.length})</h3>
+              <p className="text-sm text-on-surface-variant mt-1">Kliknij kosz aby usunąć. Transakcje przypisane do strategii zachowają ją jako NULL.</p>
             </div>
-          )}
+            {strategies.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <span className="material-symbols-outlined text-[36px] text-on-surface-variant mb-2">extension</span>
+                <p className="text-sm text-on-surface-variant">Brak strategii. Dodaj pierwszą →</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-outline-variant/50">
+                {strategies.map((s) => (
+                  <div key={s.id} className="flex items-start justify-between p-4 hover:bg-surface-container-high/50 transition-colors">
+                    <div className="flex items-start gap-3">
+                      <span className="material-symbols-outlined text-primary text-[18px] mt-0.5">extension</span>
+                      <div>
+                        <p className="text-sm text-on-surface font-medium">{s.name}</p>
+                        {s.description && <p className="font-mono text-[10px] text-on-surface-variant mt-1 max-w-xs">{s.description}</p>}
+                      </div>
+                    </div>
+                    <form action={deleteStrategy.bind(null, s.id)}>
+                      <button
+                        type="submit"
+                        className="text-on-surface-variant hover:text-error transition-colors p-1 rounded hover:bg-error/10"
+                        title="Usuń strategię"
+                        onClick={(e) => { if (!confirm(`Usunąć strategię "${s.name}"?`)) e.preventDefault(); }}
+                      >
+                        <span className="material-symbols-outlined text-[18px]">delete</span>
+                      </button>
+                    </form>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Formularz dodawania */}
+          <div className="col-span-5 bg-surface-container rounded-lg border border-outline-variant">
+            <div className="p-5 border-b border-outline-variant">
+              <h3 className="text-lg font-semibold text-on-surface flex items-center gap-2">
+                <span className="material-symbols-outlined text-primary text-[20px]">add_circle</span>
+                Dodaj Strategię
+              </h3>
+            </div>
+            <form action={createStrategy} className="p-5 flex flex-col gap-4">
+              <div>
+                <label className="block font-mono text-[10px] text-on-surface-variant uppercase mb-2">Nazwa *</label>
+                <input
+                  name="name"
+                  type="text"
+                  required
+                  placeholder="np. VWAP Bounce, ORB Breakout..."
+                  className="w-full bg-surface-container-low border-b-2 border-outline-variant focus:border-primary px-3 py-2.5 text-on-surface font-mono text-sm outline-none rounded-t transition-colors"
+                />
+              </div>
+              <div>
+                <label className="block font-mono text-[10px] text-on-surface-variant uppercase mb-2">Opis (opcjonalny)</label>
+                <textarea
+                  name="description"
+                  rows={3}
+                  placeholder="Warunki wejścia, założenia strategii..."
+                  className="w-full bg-surface-container-low border border-outline-variant focus:border-primary px-3 py-2.5 text-on-surface text-sm outline-none rounded transition-colors resize-none"
+                />
+              </div>
+              <button
+                type="submit"
+                className="w-full bg-primary text-on-primary py-2.5 rounded-lg font-mono text-xs uppercase hover:bg-primary-fixed-dim transition-colors flex items-center justify-center gap-2"
+              >
+                <span className="material-symbols-outlined text-[16px]">add</span>
+                Dodaj Strategię
+              </button>
+            </form>
+          </div>
         </div>
       )}
 

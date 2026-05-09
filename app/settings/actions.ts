@@ -2,6 +2,7 @@
 
 import { createClient } from "../lib/supabase/server";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
 export async function saveProfile(formData: FormData) {
   const supabase = await createClient();
@@ -46,4 +47,34 @@ export async function saveRiskLimits(formData: FormData) {
 
   if (error) throw new Error(error.message);
   revalidatePath("/settings");
+}
+
+export async function createStrategy(formData: FormData) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const name = (formData.get("name") as string)?.trim();
+  const description = (formData.get("description") as string)?.trim() || null;
+  if (!name) throw new Error("Nazwa jest wymagana");
+
+  const { error } = await supabase.from("strategies").insert({ user_id: user.id, name, description });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  revalidatePath("/new");
+  revalidatePath("/analytics");
+}
+
+export async function deleteStrategy(strategyId: string) {
+  const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const { error } = await supabase.from("strategies").delete().eq("id", strategyId).eq("user_id", user.id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  revalidatePath("/new");
+  revalidatePath("/analytics");
 }

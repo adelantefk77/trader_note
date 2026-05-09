@@ -81,14 +81,31 @@ export default function NewTradeClient({
     setFetchingPrice(true);
     setPriceError(null);
     setPriceData(null);
+
+    // Wywołanie bezpośrednio z przeglądarki — Bybit ma otwarte CORS,
+    // unikamy blokowania przez Vercel/AWS IP ranges
+    const bybitSymbol = instrument.trim().toUpperCase().replace(/\.P$/i, "");
     try {
-      const res = await fetch(`/api/price?symbol=${encodeURIComponent(instrument.trim())}`);
-      const data = await res.json();
-      if (!res.ok) { setPriceError(data.error); return; }
+      const res = await fetch(
+        `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${bybitSymbol}`,
+        { cache: "no-store" }
+      );
+      const json = await res.json();
+      const ticker = json?.result?.list?.[0];
+      if (!ticker) {
+        setPriceError(`Nie znaleziono ${bybitSymbol} na Bybit Perpetuals`);
+        return;
+      }
+      const data = {
+        price: parseFloat(ticker.lastPrice),
+        markPrice: parseFloat(ticker.markPrice),
+        fundingRate: parseFloat(ticker.fundingRate),
+        change24h: parseFloat(ticker.price24hPcnt) * 100,
+      };
       setPriceData(data);
       setEntryPrice(String(data.price));
     } catch {
-      setPriceError("Błąd sieci");
+      setPriceError("Błąd połączenia z Bybit");
     } finally {
       setFetchingPrice(false);
     }
